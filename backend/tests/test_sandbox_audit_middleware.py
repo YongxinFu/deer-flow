@@ -365,6 +365,43 @@ class TestClassifyCommand:
     @pytest.mark.parametrize(
         "cmd",
         [
+            # A heredoc feeding an interpreter is that interpreter's program,
+            # so the body is classified like the commands it contains.
+            "bash <<EOF\nrm -rf ~\nEOF",
+            "bash <<'EOF'\nrm -rf ~\nEOF",
+            "bash -s <<EOF\nrm -rf /\nEOF",
+            "bash <<-EOF\n\trm -rf ~\nEOF",
+            "env bash <<EOF\nsudo rm -rf /\nEOF",
+            # The body reaches the same verdicts as the spelled-out commands,
+            # including one nested inside a code-string payload.
+            "bash <<EOF\npython -c \"import os; os.system('rm -rf ~')\"\nEOF",
+        ],
+    )
+    def test_heredoc_interpreter_body_classified_as_block(self, cmd):
+        assert _classify_command(cmd) == "block", f"Expected 'block' for: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "bash <<EOF\necho hello\nEOF",
+            "bash <<EOF\nls /tmp\nEOF",
+            # A non-interpreter consumer never executes the body...
+            "cat <<EOF\nrm -rf ~\nEOF",
+            # ...and a script operand keeps the body as the script's input data.
+            "bash script.sh <<EOF\nrm -rf ~\nEOF",
+            # A shell in noexec mode only parses its input.
+            "bash -n <<EOF\nrm -rf ~\nEOF",
+        ],
+    )
+    def test_heredoc_interpreter_benign_body_stays_pass(self, cmd):
+        assert _classify_command(cmd) == "pass", f"Expected 'pass' for: {cmd!r}"
+
+    def test_heredoc_interpreter_body_warn_propagates(self):
+        assert _classify_command("bash <<EOF\npip install some-pkg\nEOF") == "warn"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
             # A newline is a statement separator exactly like ``;``, so the word
             # after it starts a new command position. These have identical shell
             # semantics to their ``;`` spelling and must get the same verdict.

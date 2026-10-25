@@ -243,6 +243,46 @@ _SILENT_EXIT_MARKER_RE = re.compile(r"Command exited with code -?\d+")
 # with delimiter ``text``.
 _HEREDOC_HEADER = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:\\?([A-Za-z_][\w.-]*)|'([^'\n]*)'|\"([^\"\n]*)\")")
 
+# An interpreter reading its program from a plain heredoc (`bash <<EOF ...
+# EOF`) is the same execution context as the stdin process substitution above:
+# the body is the program, so it is classified like the commands it contains.
+# A script operand in front (`bash script.sh <<EOF`) keeps the body as the
+# script's input data, and a non-interpreter consumer (`cat <<EOF`) never
+# executes it at all.
+_HEREDOC_INTERPRETER_HEAD_RE = re.compile(rf"^{_COMMAND_POSITION_PREFIX}({_CODE_STRING_INTERPRETERS})\s+({_STDIN_SCRIPT_FLAGS})(?=(?<!<)<<(?!<))")
+
+
+def _heredoc_interpreter_body(command: str) -> str | None:
+    """Return the heredoc body an interpreter reads as its program, if any.
+
+    Body lines run until a line whose stripped content equals the delimiter —
+    the same rule ``_consume_heredoc_bodies`` applies when splitting, kept in
+    step here so the two cannot drift. An unterminated body is the rest of the
+    command, as there is no later statement to find.
+    """
+    head = _HEREDOC_INTERPRETER_HEAD_RE.match(command)
+    if head is None:
+        return None
+    if _SHELL_INTERPRETER_RE.match(head.group(1)) and _SHELL_NOEXEC_RE.search(head.group(2)):
+        return None
+    header = _HEREDOC_HEADER.search(command, head.end())
+    if header is None:
+        return None
+    delimiter = next(group for group in header.groups() if group is not None)
+    body_start = command.find("\n", header.end())
+    if body_start == -1:
+        return None
+    pos = body_start + 1
+    while pos <= len(command):
+        newline = command.find("\n", pos)
+        line_end = len(command) if newline == -1 else newline
+        if command[pos:line_end].strip() == delimiter:
+            return command[body_start + 1 : pos]
+        if newline == -1:
+            return command[body_start + 1 :]
+        pos = newline + 1
+    return command[body_start + 1 :]
+
 
 def _consume_heredoc_bodies(command: str, pos: int, delimiters: list[str]) -> int:
     """Return the index just past the bodies of the *delimiters* opened so far.
@@ -435,6 +475,14 @@ def _classify_single_command(command: str) -> str:
     if _process_substitution_program(normalized):
         return "block"
 
+    # A heredoc body is delimited by line structure, so it is read from the
+    # original spelling — normalization joins the lines. The body is the
+    # interpreter's program and is classified like the commands it contains.
+    heredoc_body = _heredoc_interpreter_body(command)
+    heredoc_verdict = _classify_command(heredoc_body) if heredoc_body else None
+    if heredoc_verdict == "block":
+        return "block"
+
     # Also try shlex-parsed tokens for high-risk detection
     try:
         tokens = shlex.split(command)
@@ -453,7 +501,7 @@ def _classify_single_command(command: str) -> str:
         if pattern.search(normalized):
             return "warn"
 
-    return "pass"
+    return heredoc_verdict or "pass"
 
 
 def _classify_command(command: str) -> str:
