@@ -82,11 +82,18 @@ def package_skill(skill_path, output_dir=None):
 
     # Determine output location
     skill_name = skill_path.name
+    output_path = Path(output_dir).resolve() if output_dir else Path.cwd()
+    # The archive is built by walking skill_path; an output location inside
+    # that tree gets visited mid-write, so the packager would zip its own
+    # half-written .skill into the archive. Reject before creating anything.
+    if output_path.is_relative_to(skill_path):
+        print(
+            f"❌ Error: output directory {output_path} is inside the skill folder "
+            f"{skill_path}; choose a location outside it"
+        )
+        return None
     if output_dir:
-        output_path = Path(output_dir).resolve()
         output_path.mkdir(parents=True, exist_ok=True)
-    else:
-        output_path = Path.cwd()
 
     skill_filename = output_path / f"{skill_name}.skill"
 
