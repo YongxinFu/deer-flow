@@ -534,14 +534,17 @@ async def change_password(request: Request, response: Response, body: ChangePass
     - Re-issues session cookie with new token_version
     """
     from app.gateway.auth.password import hash_password_async, verify_password_async
-    from app.gateway.auth_disabled import AUTH_SOURCE_AUTH_DISABLED, AUTH_SOURCE_PAT
+    from app.gateway.auth_disabled import AUTH_SOURCE_AUTH_DISABLED, AUTH_SOURCE_INTERNAL, AUTH_SOURCE_PAT
 
     user = await get_current_user_from_request(request)
 
-    if getattr(request.state, "auth_source", None) in {AUTH_SOURCE_PAT, AUTH_SOURCE_AUTH_DISABLED}:
+    if getattr(request.state, "auth_source", None) in {AUTH_SOURCE_PAT, AUTH_SOURCE_AUTH_DISABLED, AUTH_SOURCE_INTERNAL}:
         # PAT-authenticated callers must not alter auth state (#4849 point 6);
-        # auth-disabled mode has no passwords to change.
-        if getattr(request.state, "auth_source", None) == AUTH_SOURCE_PAT:
+        # auth-disabled mode has no passwords to change; the synthetic internal
+        # principal is a trusted-header identity, not a credential holder, and
+        # carries no users row, so it is refused here by source instead of
+        # crashing on the password_hash access below.
+        if getattr(request.state, "auth_source", None) in {AUTH_SOURCE_PAT, AUTH_SOURCE_INTERNAL}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Password changes require interactive session authentication",

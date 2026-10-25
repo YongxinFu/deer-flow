@@ -422,6 +422,27 @@ def test_pat_cannot_change_password(client):
     assert "pat" in response.json()["detail"].lower()
 
 
+def test_internal_caller_cannot_change_password(client):
+    """A trusted internal request must not alter auth state either (#4849 point 6).
+
+    The synthetic internal principal carries no credential row at all, so an
+    internal-authenticated attempt must be refused by source — not crash on
+    the password_hash attribute access the route performs for real users.
+    """
+    from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, generate_csrf_token
+    from app.gateway.internal_auth import create_internal_auth_headers
+
+    csrf = generate_csrf_token()
+    client.cookies.set(CSRF_COOKIE_NAME, csrf)
+    response = client.post(
+        "/api/v1/auth/change-password",
+        json={"current_password": "x", "new_password": "Whatever123!"},
+        headers={**create_internal_auth_headers(), CSRF_HEADER_NAME: csrf},
+    )
+    assert response.status_code == 403
+    assert "session" in response.json()["detail"].lower()
+
+
 def test_successful_pat_auth_stamps_last_used(client, pat_env):
     _app, repo, _engine = pat_env
     created = _create_pat(client)
