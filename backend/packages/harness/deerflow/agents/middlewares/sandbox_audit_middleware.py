@@ -251,6 +251,12 @@ _HEREDOC_HEADER = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:\\?([A-Za-z_][\w.-]*)|'([
 # executes it at all.
 _HEREDOC_INTERPRETER_HEAD_RE = re.compile(rf"^{_COMMAND_POSITION_PREFIX}({_CODE_STRING_INTERPRETERS})\s+({_STDIN_SCRIPT_FLAGS})(?=(?<!<)<<(?!<))")
 
+# No legitimate program nests interpreters through heredocs anywhere near this
+# deep. The bound is fail-closed: without it a crafted stack — a command of
+# roughly 8 KB, well under ``_MAX_COMMAND_LENGTH`` — reaches the interpreter
+# recursion limit and crashes classification instead of returning a verdict.
+_MAX_HEREDOC_CLASSIFY_DEPTH = 16
+
 
 def _heredoc_interpreter_body(command: str) -> str | None:
     """Return the heredoc body an interpreter reads as its program, if any.
@@ -462,7 +468,7 @@ def _matches_high_risk(candidate: str) -> bool:
     return any(pattern.match(candidate) for pattern in _HIGH_RISK_COMMAND_POSITION_PATTERNS)
 
 
-def _classify_single_command(command: str) -> str:
+def _classify_single_command(command: str, *, _depth: int = 0) -> str:
     """Classify a single (non-compound) command. Return 'block', 'warn', or 'pass'."""
     normalized = " ".join(command.split())
 
@@ -479,7 +485,9 @@ def _classify_single_command(command: str) -> str:
     # original spelling — normalization joins the lines. The body is the
     # interpreter's program and is classified like the commands it contains.
     heredoc_body = _heredoc_interpreter_body(command)
-    heredoc_verdict = _classify_command(heredoc_body) if heredoc_body else None
+    if heredoc_body is not None and _depth >= _MAX_HEREDOC_CLASSIFY_DEPTH:
+        return "block"
+    heredoc_verdict = _classify_command(heredoc_body, _depth=_depth + 1) if heredoc_body else None
     if heredoc_verdict == "block":
         return "block"
 
@@ -504,7 +512,7 @@ def _classify_single_command(command: str) -> str:
     return heredoc_verdict or "pass"
 
 
-def _classify_command(command: str) -> str:
+def _classify_command(command: str, *, _depth: int = 0) -> str:
     """Return 'block', 'warn', or 'pass'.
 
     Strategy:
@@ -526,7 +534,7 @@ def _classify_command(command: str) -> str:
     sub_commands = _split_compound_command(command, split_pipes=True)
     worst = "pass"
     for sub in sub_commands:
-        verdict = _classify_single_command(sub)
+        verdict = _classify_single_command(sub, _depth=_depth)
         if verdict == "block":
             return "block"  # short-circuit: can't get worse
         if verdict == "warn":

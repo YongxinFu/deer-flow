@@ -399,6 +399,19 @@ class TestClassifyCommand:
     def test_heredoc_interpreter_body_warn_propagates(self):
         assert _classify_command("bash <<EOF\npip install some-pkg\nEOF") == "warn"
 
+    def test_heredoc_nesting_bomb_fails_closed(self):
+        # ~8 KB of nested interpreter heredocs sits well under the middleware's
+        # command-length cap but reaches the interpreter recursion limit; the
+        # depth bound must fail closed instead of crashing classification.
+        depth = 500
+        lines = [f"bash <<E{i}" for i in range(depth)]
+        lines.append("echo hi")
+        lines += [f"E{i}" for i in reversed(range(depth))]
+        assert _classify_command("\n".join(lines)) == "block"
+
+    def test_heredoc_bounded_nesting_still_classifies(self):
+        assert _classify_command("bash <<A\nbash <<B\necho hi\nB\nA") == "pass"
+
     @pytest.mark.parametrize(
         "cmd",
         [
