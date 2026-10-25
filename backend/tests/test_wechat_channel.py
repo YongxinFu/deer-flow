@@ -2351,3 +2351,86 @@ def test_boundary_sized_inbound_image_survives_pkcs7_padding(tmp_path: Path):
         assert Path(files[0]["path"]).read_bytes() == plaintext
 
     _run(go())
+
+
+def test_attachment_sends_get_distinct_client_ids_on_a_shared_millisecond(monkeypatch, tmp_path: Path):
+    """Two attachment sends within one millisecond must not reuse a client_id.
+
+    The ilink sendmessage client_id is the caller-assigned message identity. The
+    text path already salts its client_id with random bytes; the image and file
+    paths derive theirs from the wall clock alone, so sends that share a
+    millisecond collide. Freeze the clock to make the collision deterministic.
+    """
+
+    import time as time_module
+    from types import SimpleNamespace
+
+    from app.channels.message_bus import ResolvedAttachment
+    from app.channels.wechat import WechatChannel
+
+    async def go():
+        post_calls: list[dict[str, Any]] = []
+
+        def _client_factory(*args, **kwargs):
+            return _MockAsyncClient(
+                post_calls=post_calls,
+                post_responses=[
+                    {"ret": 0, "upload_param": "enc-query-a", "upload_full_url": "https://cdn.example/upload-a"},
+                    {"ret": 0},
+                    {"ret": 0},
+                    {"ret": 0, "upload_param": "enc-query-b", "upload_full_url": "https://cdn.example/upload-b"},
+                    {"ret": 0},
+                    {"ret": 0},
+                    {"ret": 0, "upload_param": "enc-query-c", "upload_full_url": "https://cdn.example/upload-c"},
+                    {"ret": 0},
+                    {"ret": 0},
+                ],
+                **kwargs,
+            )
+
+        monkeypatch.setattr("app.channels.wechat.httpx.AsyncClient", _client_factory)
+        monkeypatch.setattr(
+            "app.channels.wechat.time",
+            SimpleNamespace(time=lambda: 1700000000.25, monotonic=time_module.monotonic),
+        )
+
+        channel = WechatChannel(bus=MessageBus(), config={"bot_token": "bot-token"})
+        channel._context_tokens_by_chat["wx-user-1"] = "ctx-attachment-ids"
+
+        async def send(path: Path, filename: str, mime_type: str, is_image: bool) -> bool:
+            return await channel.send_file(
+                OutboundMessage(
+                    channel_name="wechat",
+                    chat_id="wx-user-1",
+                    thread_id="thread-1",
+                    text="reply text",
+                ),
+                ResolvedAttachment(
+                    virtual_path=f"/mnt/user-data/outputs/{filename}",
+                    actual_path=path,
+                    filename=filename,
+                    mime_type=mime_type,
+                    size=path.stat().st_size,
+                    is_image=is_image,
+                ),
+            )
+
+        image_a = tmp_path / "a.png"
+        image_a.write_bytes(b"png-a")
+        image_b = tmp_path / "b.png"
+        image_b.write_bytes(b"png-b")
+        document = tmp_path / "notes.txt"
+        document.write_bytes(b"notes")
+
+        assert await send(image_a, "a.png", "image/png", is_image=True) is True
+        assert await send(image_b, "b.png", "image/png", is_image=True) is True
+        assert await send(document, "notes.txt", "text/plain", is_image=False) is True
+
+        client_ids = [call["json"]["msg"]["client_id"] for call in post_calls if call["url"].endswith("/ilink/bot/sendmessage")]
+        assert len(client_ids) == 3
+        assert client_ids[0].startswith("deerflow_img_")
+        assert client_ids[1].startswith("deerflow_img_")
+        assert client_ids[2].startswith("deerflow_file_")
+        assert len(set(client_ids)) == 3, f"distinct attachment sends shared a client_id on a shared millisecond: {client_ids}"
+
+    _run(go())
