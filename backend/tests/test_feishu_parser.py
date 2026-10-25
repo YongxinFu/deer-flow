@@ -1694,3 +1694,54 @@ def test_feishu_leading_mention_before_chat_keeps_mention():
         mock_make_inbound.assert_called_once()
         assert mock_make_inbound.call_args[1]["msg_type"].value == "chat"
         assert mock_make_inbound.call_args[1]["text"] == "@_user_1 please summarise this"
+
+
+def test_feishu_shutdown_failure_still_stops_the_sdk_loop_and_tracks_the_task(monkeypatch, caplog):
+    """An unexpected error inside ``_shutdown_ws`` must not wedge the SDK thread.
+
+    ``_shutdown_ws`` is the only thing that calls ``loop.stop()`` so the SDK
+    thread's ``ws_client.start()`` returns and ``stop()`` can join the thread.
+    An exception other than ``CancelledError`` used to skip ``loop.stop()``
+    entirely and drop the task handle: the thread kept running until ``stop()``
+    raised ``ChannelStopTimeout``, and the failure itself stayed invisible
+    ("Task exception was never retrieved" at GC time). The loop must stop on
+    unexpected failures too, and the pending handle must stay strongly
+    referenced until it settles.
+    """
+
+    from types import SimpleNamespace
+
+    async def go():
+        sdk_loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=sdk_loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            channel = FeishuChannel(MessageBus(), {})
+            fake_client = SimpleNamespace(_auto_reconnect=True, _conn=None, _lock=None)
+
+            async def _boom(ws_client, deadline):
+                raise RuntimeError("simulated shutdown failure")
+
+            monkeypatch.setattr(channel, "_settled_ws_connection", _boom)
+            scheduled = threading.Event()
+
+            def begin():
+                channel._begin_ws_shutdown(sdk_loop, fake_client)
+                scheduled.set()
+
+            with caplog.at_level(logging.ERROR, logger="app.channels.feishu"):
+                sdk_loop.call_soon_threadsafe(begin)
+                assert scheduled.wait(2)
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "SDK loop kept running after a failed shutdown task"
+            assert "WebSocket shutdown failed" in caplog.text
+            # stop() clears the handle; a channel that never reaches stop()
+            # keeps the finished task referenced, which is harmless.
+            assert isinstance(getattr(channel, "_ws_shutdown_task", None), asyncio.Task)
+        finally:
+            if sdk_loop.is_running():
+                sdk_loop.call_soon_threadsafe(sdk_loop.stop)
+            thread.join(timeout=2)
+            sdk_loop.close()
+
+    _run(go())

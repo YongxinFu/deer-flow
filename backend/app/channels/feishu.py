@@ -177,6 +177,11 @@ class FeishuChannel(Channel):
         self._ws_loop: asyncio.AbstractEventLoop | None = None
         self._ws_client: Any = None
         self._ws_lock = threading.Lock()
+        # Strong handle for the one-shot shutdown task scheduled on the SDK
+        # loop; asyncio keeps only weak task references, so the dropped handle
+        # used to let the task vanish mid-run and left stop() with nothing to
+        # observe if it never settled.
+        self._ws_shutdown_task: asyncio.Task | None = None
         self._api_client = None
         self._CreateMessageReactionRequest = None
         self._CreateMessageReactionRequestBody = None
@@ -446,7 +451,11 @@ class FeishuChannel(Channel):
             logger.debug("[Feishu] SDK loop already closed before shutdown could be scheduled")
 
     def _begin_ws_shutdown(self, loop: asyncio.AbstractEventLoop, ws_client: Any) -> None:
-        loop.create_task(self._shutdown_ws(loop, ws_client))
+        # Keep the handle until stop() clears it: a done-callback would be
+        # queued behind loop.stop() and never run, and asyncio only weakly
+        # tracks tasks, so the dropped handle used to let the one-shot task
+        # vanish mid-run.
+        self._ws_shutdown_task = loop.create_task(self._shutdown_ws(loop, ws_client))
 
     async def _shutdown_ws(self, loop: asyncio.AbstractEventLoop, ws_client: Any) -> None:
         """Runs on the SDK loop: disarm reconnects, close the socket, stop the loop."""
@@ -475,6 +484,12 @@ class FeishuChannel(Channel):
         except asyncio.CancelledError:
             # The thread is already draining this loop; leave it to that.
             raise
+        except Exception:
+            # loop.stop() below is the only thing that lets ws_client.start()
+            # return; skipping it on an unexpected failure would leave the SDK
+            # thread dialing until stop() raised ChannelStopTimeout, with the
+            # cause visible only as an unretrieved task exception at GC time.
+            logger.exception("[Feishu] WebSocket shutdown failed; stopping the SDK loop anyway")
         loop.stop()
 
     @staticmethod
@@ -532,6 +547,7 @@ class FeishuChannel(Channel):
         with self._ws_lock:
             self._ws_loop = None
             self._ws_client = None
+            self._ws_shutdown_task = None
         logger.info("Feishu channel stopped")
 
     async def send(self, msg: OutboundMessage, *, _max_retries: int = 3) -> None:
