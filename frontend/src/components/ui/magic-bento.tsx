@@ -691,6 +691,14 @@ const MagicBento: React.FC<BentoProps> = ({
                 el.addEventListener("mousemove", handleMouseMove);
                 el.addEventListener("mouseleave", handleMouseLeave);
                 el.addEventListener("click", handleClick);
+                // The inline ref re-runs (null → element) on every re-render;
+                // without a cleanup the three handlers accumulate per pass and
+                // one click fans out one GSAP ripple per stale registration.
+                return () => {
+                  el.removeEventListener("mousemove", handleMouseMove);
+                  el.removeEventListener("mouseleave", handleMouseLeave);
+                  el.removeEventListener("click", handleClick);
+                };
               }}
             >
               <div className="magic-bento-card__header">
