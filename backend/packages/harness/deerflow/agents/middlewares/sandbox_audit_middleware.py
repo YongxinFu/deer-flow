@@ -138,6 +138,48 @@ _STDIN_INTERPRETER_HEAD_RE = re.compile(rf"^{_COMMAND_POSITION_PREFIX}({_CODE_ST
 _PROCESS_SUBSTITUTION_RE = re.compile(rf"<\s*\(\s*{_RISKY_SUBSTITUTION_EXECUTABLES}[^)]*\)")
 _PROCESS_SUBSTITUTION_PROGRAM_RE = re.compile(rf"^{_COMMAND_POSITION_PREFIX}({_CODE_STRING_INTERPRETERS})\s+({_STDIN_SCRIPT_FLAGS})(?=<\s*\()")
 
+# A non-shell interpreter's code string can hand a string literal straight back
+# to a shell — ``os.system('rm -rf ~')``, ``execSync('rm -rf ~')``, perl's bare
+# ``system('...')`` — and that literal is a shell command in its own right, so
+# it must be classified like one instead of hiding behind the code string's
+# trailing quote (the ``$``-anchored destructive rules cannot see it there).
+# Only these call shapes are extracted: their argument re-enters shell
+# semantics exactly like a ``sh -c`` payload, while interpreter-native
+# destruction (``shutil.rmtree``) is a language problem this guard does not
+# attempt.
+_SHELL_STRING_CALL_RES = tuple(
+    re.compile(rf"\b{call}\s*\(\s*([\"'])(.*?)\1")
+    for call in (
+        r"(?:os\.)?system",
+        r"(?:os\.)?popen",
+        r"(?:child_process\.)?execSync",
+        r"(?:child_process\.)?spawnSync",
+    )
+)
+_INTERPRETER_NAME_RE = re.compile(rf"^(?:{_CODE_STRING_INTERPRETERS})$")
+
+
+def _interpreter_shell_string_payloads(tokens: list[str]) -> list[str]:
+    """Shell-command string literals inside an interpreter's code-string flag.
+
+    Walks the token list of one sub-command, finds each interpreter token and
+    the first non-flag token behind it (its code string or script operand — a
+    bare filename simply carries no callable), and returns the arguments of
+    the shell-invoking calls that code string contains.
+    """
+    payloads: list[str] = []
+    for index, token in enumerate(tokens):
+        if not _INTERPRETER_NAME_RE.match(token):
+            continue
+        rest = tokens[index + 1 :]
+        while rest and rest[0].startswith("-"):
+            rest = rest[1:]
+        if not rest:
+            continue
+        for pattern in _SHELL_STRING_CALL_RES:
+            payloads.extend(match.group(2) for match in pattern.finditer(rest[0]))
+    return payloads
+
 
 def _stdin_program_substitution(command: str) -> bool:
     """Return True when *command* feeds a fetched program to an interpreter on stdin.
@@ -399,6 +441,9 @@ def _classify_single_command(command: str) -> str:
         joined = " ".join(tokens)
         if _matches_high_risk(joined):
             return "block"
+        for shell_string in _interpreter_shell_string_payloads(tokens):
+            if _matches_high_risk(shell_string):
+                return "block"
     except ValueError:
         # Heredocs and other multiline shell forms may be valid bash but
         # unparseable by shlex. Raw high-risk patterns were already checked.

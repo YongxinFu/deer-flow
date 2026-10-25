@@ -323,6 +323,48 @@ class TestClassifyCommand:
     @pytest.mark.parametrize(
         "cmd",
         [
+            # A code string can hand a string literal straight back to a shell
+            # (os.system / execSync / perl's bare system). The literal is a
+            # shell command in its own right, so the destructive rules must see
+            # it there too instead of losing it behind the code string's
+            # trailing quote.
+            "python -c \"import os; os.system('rm -rf ~')\"",
+            "python -c \"import os; os.system('rm -rf /')\"",
+            "python3.12 -c \"import os; os.system('rm -rf /')\"",
+            "python -u -c \"import os; os.system('rm -rf /')\"",
+            "perl -e 'system(\"rm -rf ~\")'",
+            "perl -p -e 'system(\"cat /etc/shadow\")'",
+            "ruby -e \"system('rm -rf ~')\"",
+            "node -e \"require('child_process').execSync('rm -rf ~')\"",
+            "python -c \"import os; os.popen('cat /etc/shadow')\"",
+            # Reached through a wrapper: the interpreter stays an execution
+            # context wherever it appears.
+            "nohup python -c \"import os; os.system('rm -rf ~')\" &",
+        ],
+    )
+    def test_interpreter_shell_string_payload_classified_as_block(self, cmd):
+        assert _classify_command(cmd) == "block", f"Expected 'block' for: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Only the *shell string* a code string hands over is classified;
+            # ordinary inline scripts, benign shell strings, and interpreter-
+            # native spellings (argument lists) stay allowed.
+            'python3 -c "import sys; print(sys.version)"',
+            "python -c \"import os; os.system('ls /tmp')\"",
+            "python -c \"print('hello')\"",
+            "python -c \"import subprocess; subprocess.run(['rm', '-rf', '/tmp/x'])\"",
+            "node -e \"console.log(require('child_process').execSync('date').toString())\"",
+            "python script.py",
+        ],
+    )
+    def test_interpreter_shell_string_benign_payload_stays_pass(self, cmd):
+        assert _classify_command(cmd) == "pass", f"Expected 'pass' for: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
             # A newline is a statement separator exactly like ``;``, so the word
             # after it starts a new command position. These have identical shell
             # semantics to their ``;`` spelling and must get the same verdict.
