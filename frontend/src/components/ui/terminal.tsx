@@ -155,8 +155,19 @@ export const TypingAnimation = ({
     let i = 0;
     const typingEffect = setInterval(() => {
       if (i < children.length) {
-        setDisplayedText(children.substring(0, i + 1));
-        i++;
+        // One tick per code point: revealing a single UTF-16 unit of a
+        // supplementary-plane character renders a lone surrogate (U+FFFD)
+        // until the next tick completes the pair.
+        const step =
+          i + 1 < children.length &&
+          children.charCodeAt(i) >= 0xd800 &&
+          children.charCodeAt(i) <= 0xdbff &&
+          children.charCodeAt(i + 1) >= 0xdc00 &&
+          children.charCodeAt(i + 1) <= 0xdfff
+            ? 2
+            : 1;
+        setDisplayedText(children.substring(0, i + step));
+        i += step;
       } else {
         clearInterval(typingEffect);
         if (sequence && itemIndex !== null) {
