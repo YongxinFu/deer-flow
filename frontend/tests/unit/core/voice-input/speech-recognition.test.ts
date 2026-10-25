@@ -309,3 +309,35 @@ function makeSpeechRecognitionConstructor(): SpeechRecognitionConstructor {
     }
   };
 }
+
+describe("speech transcript seam joining", () => {
+  it("joins supplementary-plane Han seams without inserting a space", () => {
+    // A CJK Ext B ideograph is one code point but two UTF-16 code units:
+    // sampling a single unit at the seam yields a lone surrogate that matches
+    // neither script class, wrongly gluing a space into Han text.
+    expect(
+      readSpeechRecognitionTranscript({
+        length: 2,
+        0: { isFinal: true, length: 1, 0: { transcript: "𠀀" } },
+        1: { isFinal: true, length: 1, 0: { transcript: "𠀁" } },
+      }).text,
+    ).toBe("𠀀𠀁");
+  });
+
+  it("keeps BMP Han seams space-free and latin seams spaced", () => {
+    expect(
+      readSpeechRecognitionTranscript({
+        length: 2,
+        0: { isFinal: true, length: 1, 0: { transcript: "中文" } },
+        1: { isFinal: true, length: 1, 0: { transcript: "文本" } },
+      }).text,
+    ).toBe("中文文本");
+    expect(
+      readSpeechRecognitionTranscript({
+        length: 2,
+        0: { isFinal: true, length: 1, 0: { transcript: "hello" } },
+        1: { isFinal: true, length: 1, 0: { transcript: "world" } },
+      }).text,
+    ).toBe("hello world");
+  });
+});

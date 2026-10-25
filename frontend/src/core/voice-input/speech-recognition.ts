@@ -107,14 +107,50 @@ export function shouldRestartSpeechRecognition(
 // surrounds them: Han (Chinese), kana (Japanese), CJK symbols/punctuation,
 // and their full-width/half-width compatibility forms. Korean Hangul is
 // deliberately absent — Korean uses eojeol spaces, so it is joined like any
-// space-delimited script. Boundaries compare single UTF-16 code units, so
-// supplementary-plane Han (CJK Ext B+) never matches; fine for ASR output.
+// space-delimited script. Property escapes keep supplementary-plane Han
+// (CJK Ext B+) matching alongside the BMP forms.
 const NO_SPACE_SCRIPT_BOUNDARY =
-  /[\u3000-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uff9f]/;
+  /[\u3000-\u303f\u31f0-\u31ff\uff00-\uff9f\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
 
 // These leading marks attach to the preceding text. Keep the rule directional:
 // a sentence-ending mark on the left still needs a space before the next word.
 const NO_SPACE_BEFORE_PUNCTUATION = /[,.;:!?%…)\]}]/;
+
+// One full code point at each string edge: a single UTF-16 unit slices a
+// supplementary-plane character into a lone surrogate, which matches neither
+// script class and misclassifies the seam.
+function lastCodePoint(text: string): string {
+  if (!text) {
+    return "";
+  }
+  const index = text.length - 1;
+  if (
+    index > 0 &&
+    text.charCodeAt(index) >= 0xdc00 &&
+    text.charCodeAt(index) <= 0xdfff &&
+    text.charCodeAt(index - 1) >= 0xd800 &&
+    text.charCodeAt(index - 1) <= 0xdbff
+  ) {
+    return text.slice(-2);
+  }
+  return text.slice(-1);
+}
+
+function firstCodePoint(text: string): string {
+  if (!text) {
+    return "";
+  }
+  if (
+    text.length >= 2 &&
+    text.charCodeAt(0) >= 0xd800 &&
+    text.charCodeAt(0) <= 0xdbff &&
+    text.charCodeAt(1) >= 0xdc00 &&
+    text.charCodeAt(1) <= 0xdfff
+  ) {
+    return text.slice(0, 2);
+  }
+  return text.slice(0, 1);
+}
 
 function joinTranscriptSegments(left: string, right: string): string {
   if (!left) {
@@ -123,8 +159,8 @@ function joinTranscriptSegments(left: string, right: string): string {
   if (!right) {
     return left;
   }
-  const lastChar = left.trimEnd().slice(-1);
-  const firstChar = right.trimStart().slice(0, 1);
+  const lastChar = lastCodePoint(left.trimEnd());
+  const firstChar = firstCodePoint(right.trimStart());
   // Space-delimited scripts need an explicit separator when a provider does
   // not pad its results (WebKit trims final transcripts), otherwise the last
   // finalized word glues onto the next segment. No-space scripts (Chinese,
