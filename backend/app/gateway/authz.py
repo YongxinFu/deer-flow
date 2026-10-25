@@ -237,32 +237,40 @@ def _get_cached_route_provider(config: AuthorizationConfig) -> AuthorizationProv
     The provider is cached per config object identity. When ``get_app_config()``
     returns a new object (hot-reload), the signature is recomputed and compared;
     only an actual content change triggers re-resolution. This avoids calling
-    ``model_dump()`` on every request — the fast path is a single ``id()`` check.
+    ``model_dump()`` on every request — the fast path is a single identity check.
+
+    The cache holds the config object itself, never its ``id()`` alone: an id
+    is unique only among *live* objects, so a collected config's address can be
+    handed to a reloaded config with different content, and an id-keyed fast
+    path would keep serving the previous provider — authorization changes would
+    silently not apply. Holding the object makes that reuse impossible for a
+    cached entry and identity comparison exact (the plugin provider cache in
+    this module keeps the same discipline with its loop reference).
     """
     global _route_provider_config_id, _route_provider_config_sig, _route_provider_cache
 
-    config_id = id(config)
-
-    # Fast path: same config object as last time → return cached provider.
-    if config_id == _route_provider_config_id and _route_provider_cache:
-        return _route_provider_cache.get("provider")
+    # Fast path: the very config object cached last time → same provider.
+    if _route_provider_cache.get("config") is config and _route_provider_cache.get("provider"):
+        return _route_provider_cache["provider"]
 
     # Config object changed (hot-reload): compute signature to check if
     # content actually changed or just the wrapper object identity.
     sig = repr(sorted(config.model_dump().items()))
     if sig == _route_provider_config_sig and _route_provider_cache:
-        # Same content, different object — update id, reuse provider.
-        _route_provider_config_id = config_id
+        # Same content, different object — publish the new identity, reuse provider.
+        _route_provider_cache["config"] = config
+        _route_provider_config_id = id(config)
         return _route_provider_cache.get("provider")
 
     # Content changed (or first call): re-resolve into a local first,
-    # then publish id + sig + provider together to avoid a race window.
+    # then publish config + sig + provider together to avoid a race window.
     _route_provider_cache.clear()
 
     provider = resolve_authorization_provider(config)
     if provider is not None:
         _route_provider_cache["provider"] = provider
-    _route_provider_config_id = config_id
+    _route_provider_cache["config"] = config
+    _route_provider_config_id = id(config)
     _route_provider_config_sig = sig
     return provider
 

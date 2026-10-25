@@ -497,3 +497,64 @@ class TestRouteProviderCache:
         p1 = _get_cached_route_provider(config1)
         p2 = _get_cached_route_provider(config2)
         assert p1 is p2
+
+    def test_recycled_config_address_does_not_spoof_identity(self):
+        """A reloaded config on a collected config's address must re-resolve.
+
+        An ``id()`` is unique only among live objects: after a hot-reload the
+        old config can be collected and the allocator can hand its address to
+        the new config. The fast path must key on object identity, so this
+        simulated address reuse serves the new content, not the old provider.
+        """
+        import app.gateway.authz as authz_module
+
+        authz_module._route_provider_cache.clear()
+        authz_module._route_provider_config_id = None
+        authz_module._route_provider_config_sig = None
+
+        config1 = AuthorizationConfig(
+            enabled=True,
+            provider=AuthorizationProviderConfig(
+                use="deerflow.authz.rbac:RbacAuthorizationProvider",
+                config={"roles": {"user": {"routes": {"allow": "*"}}}},
+            ),
+        )
+        p1 = _get_cached_route_provider(config1)
+
+        config2 = AuthorizationConfig(
+            enabled=True,
+            provider=AuthorizationProviderConfig(
+                use="deerflow.authz.rbac:RbacAuthorizationProvider",
+                config={"roles": {"user": {"routes": {"allow": []}}}},
+            ),
+        )
+        # Simulate the allocator reusing config1's address for config2 after
+        # collection: the pre-fix fast path keyed on id() alone.
+        authz_module._route_provider_config_id = id(config2)
+
+        p2 = _get_cached_route_provider(config2)
+        assert p1 is not None
+        assert p2 is not None
+        assert p2 is not p1
+
+    def test_cache_holds_config_alive(self):
+        """The cache keeps a strong reference to the config it was built for.
+
+        Holding the object is what makes address reuse impossible for a cached
+        entry, so the identity fast path cannot be spoofed by the allocator.
+        """
+        import app.gateway.authz as authz_module
+
+        authz_module._route_provider_cache.clear()
+        authz_module._route_provider_config_id = None
+        authz_module._route_provider_config_sig = None
+
+        config = AuthorizationConfig(
+            enabled=True,
+            provider=AuthorizationProviderConfig(
+                use="deerflow.authz.rbac:RbacAuthorizationProvider",
+                config={"roles": {"user": {"routes": {"allow": "*"}}}},
+            ),
+        )
+        _get_cached_route_provider(config)
+        assert authz_module._route_provider_cache.get("config") is config
