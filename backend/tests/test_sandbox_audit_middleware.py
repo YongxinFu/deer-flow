@@ -415,6 +415,36 @@ class TestClassifyCommand:
     @pytest.mark.parametrize(
         "cmd",
         [
+            # bash splices a backslash-newline into one logical line, so the
+            # destructive spelling must survive the splice.
+            "rm -rf \\\n~",
+            "rm -rf \\\n/",
+            "echo x; rm -rf \\\n~",
+            # A subshell prefix or a trailing comment does not soften rm.
+            "(rm -rf ~)",
+            "(rm -rf /)",
+            "rm -rf ~ # cleanup",
+        ],
+    )
+    def test_destructive_rm_tail_evasions_classified_as_block(self, cmd):
+        assert _classify_command(cmd) == "block", f"Expected 'block' for: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A workspace-scoped rm keeps its policy verdict, and value
+            # position stays value position.
+            "rm -rf /tmp/x # cleanup",
+            "(echo hi)",
+            "echo (rm -rf ~)",
+        ],
+    )
+    def test_destructive_rm_tail_evasion_benign_stays_pass(self, cmd):
+        assert _classify_command(cmd) == "pass", f"Expected 'pass' for: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
             # A newline is a statement separator exactly like ``;``, so the word
             # after it starts a new command position. These have identical shell
             # semantics to their ``;`` spelling and must get the same verdict.

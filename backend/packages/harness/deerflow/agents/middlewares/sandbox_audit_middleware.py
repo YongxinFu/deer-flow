@@ -117,6 +117,13 @@ _HIGH_RISK_COMMAND_POSITION_PATTERNS: list[re.Pattern[str]] = [
     # handed. Anchoring keeps it in command position: a dot that is an ordinary
     # path argument (`du -sh . $(curl u)`) stays value position.
     re.compile(rf"^{_COMMAND_POSITION_PREFIX}\.\s+[\"']?{_RISKY_SUBSTITUTION}"),
+    # The destructive ``rm -r`` rule is anchored to both ends of a sub-command,
+    # which a wrapper or a tail comment defeats even though bash still runs the
+    # same command: ``(rm -rf ~)`` and ``rm -rf ~ # note`` must not land softer
+    # than the bare spelling. Leading ``(`` and trailing ``)`` layers and a
+    # trailing comment are tolerated; value position stays protected by the
+    # ``^`` anchor.
+    re.compile(r"^[\s(]*rm\s+-[^\s]*r[^\s]*\s+(/\*?|~/?\*?|/home\b|/root\b)[\s)]*(?:#.*)?$"),
 ]
 
 # `cmd < <(curl u)` is only an execution when *nothing* else supplies the
@@ -520,9 +527,16 @@ def _classify_command(command: str, *, _depth: int = 0) -> str:
        catches structural attacks like ``while true; do bash & done`` or
        ``:(){ :|:& };:`` that span multiple shell statements — splitting them
        on ``;`` would destroy the pattern context.
-    2. Then split compound commands (e.g. ``cmd1 && cmd2 ; cmd3``) and
+    2. Then split compound commands (e.g., ``cmd1 && cmd2 ; cmd3``) and
        classify each sub-command independently. The most severe verdict wins.
     """
+    # A backslash-newline is line continuation, not a statement break: bash
+    # splices it out and runs ``rm -rf \\<newline>~`` as ``rm -rf ~``, so it is
+    # spliced out here too before any rule can be thrown off by the pieces.
+    # (Inside quotes bash keeps the pair literal, but a literal backslash-
+    # newline in a benign quoted string cannot grow a destructive pattern.)
+    command = command.replace("\\\r\n", "").replace("\\\n", "")
+
     # Pass 1: whole-command high-risk scan (catches multi-statement patterns)
     normalized = " ".join(command.split())
     for pattern in _HIGH_RISK_PATTERNS:
