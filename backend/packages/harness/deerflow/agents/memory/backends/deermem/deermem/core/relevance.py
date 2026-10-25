@@ -151,7 +151,10 @@ def _coerce_confidence(fact: dict[str, Any]) -> float:
         value = float(fact.get("confidence"))
         if not math.isfinite(value):
             raise ValueError
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a stored file can carry an unbounded JSON integer
+        # literal such as 10**400, which float() refuses — one malformed fact
+        # must not fail the whole recall-scoring pass.
         return 0.0
     return min(1.0, max(0.0, value))
 

@@ -602,3 +602,22 @@ class TestMiddlewareQueryWiring:
             mw.before_agent(state, SimpleNamespace(context={}))
 
         assert get_context.call_args.kwargs.get("query") == "how do I add a database migration"
+
+
+def test_unbounded_integer_confidence_scores_as_zero_instead_of_crashing():
+    # Stored memory files are the trust boundary for read-side coercion
+    # (corrupted or hand-edited files): JSON parses a 400-digit confidence
+    # literal as an arbitrary-precision int and float() raises OverflowError,
+    # which the coercion must swallow like every other unusable shape instead
+    # of failing the whole recall-scoring pass.
+    from deerflow.agents.memory.backends.deermem.deermem.core.relevance import score_facts
+
+    facts = [
+        {"content": "malformed confidence", "confidence": 10**400},
+        {"content": "solid fact", "confidence": 0.8},
+    ]
+
+    scored = score_facts(facts, "anything", relevance_weight=0.0)
+
+    assert [fact["content"] for _, fact in scored] == ["solid fact", "malformed confidence"]
+    assert dict((fact["content"], score) for score, fact in scored)["malformed confidence"] == 0.0

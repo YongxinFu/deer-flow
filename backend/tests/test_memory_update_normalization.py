@@ -10,7 +10,7 @@ the whole batch and losing the valid facts in the same response.
 import json
 import logging
 
-from deerflow.agents.memory.backends.deermem.deermem.core.updater import _parse_memory_update_response
+from deerflow.agents.memory.backends.deermem.deermem.core.updater import _coerce_source_confidence, _parse_memory_update_response
 
 _VALID_FACT = {
     "content": "User prefers dark mode",
@@ -70,3 +70,27 @@ def test_finite_values_are_kept():
 
     assert parsed["staleFactsToExtend"][0]["extend_by_days"] == 30
     assert parsed["factsToConsolidate"][0]["consolidated"]["confidence"] == 0.7
+
+
+def test_unbounded_integer_source_confidence_defaults_to_neutral():
+    # _coerce_source_confidence reads confidences back from stored memory files,
+    # and its docstring's threat model is corrupted or manually edited files.
+    # JSON parses a 400-digit literal as an arbitrary-precision int, and
+    # float() raises OverflowError (not ValueError) for it — the same shape
+    # _normalize_memory_update_data already guards on the consolidation path.
+    fact = {"content": "fact", "confidence": 10**400}
+
+    assert _coerce_source_confidence(fact) == 0.5
+
+
+def test_unbounded_integer_confidence_sorts_in_stale_extension_flow():
+    # The stale-extension ranking sorts stored facts by this coercion; one
+    # malformed fact must not crash the whole stale-facts pass.
+    facts = [
+        {"content": "bad", "confidence": 10**400},
+        {"content": "good", "confidence": 0.9},
+    ]
+
+    ranked = sorted(facts, key=_coerce_source_confidence)
+
+    assert [fact["content"] for fact in ranked] == ["bad", "good"]

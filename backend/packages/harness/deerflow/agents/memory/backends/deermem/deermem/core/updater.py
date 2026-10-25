@@ -76,7 +76,11 @@ def _coerce_source_confidence(fact: dict[str, Any]) -> float:
         return 0.5
     try:
         val = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: JSON parses an unbounded integer literal such as
+        # 10**400 as an arbitrary-precision int, which float() refuses — the
+        # same shape the consolidation path guards in
+        # _normalize_memory_update_data.
         return 0.5
     return max(0.0, min(val, 1.0)) if math.isfinite(val) else 0.5
 
